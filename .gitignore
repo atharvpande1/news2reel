@@ -8,3 +8,11 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local runtime state — see CLAUDE.md: the DB is never committed or shared
+# via files; it's created by `alembic upgrade head`.
+*.db
+*.db-wal
+*.db-shm
+.env
+
