@@ -103,13 +103,15 @@ def fetch_url(
                 with client.stream(
                     "GET", current_url, headers=dict(conditional_headers or {})
                 ) as response:
-                    if response.is_redirect:
+                    # has_redirect_location, not is_redirect: the latter is
+                    # true for *any* 3xx status including 304 Not Modified —
+                    # a conditional GET hit would otherwise be misread as a
+                    # redirect with a missing Location header and rejected.
+                    if response.has_redirect_location:
                         redirects_followed += 1
                         if redirects_followed > settings.fetch_max_redirects:
                             raise UnsafeUrlError("too many redirects")
-                        location = response.headers.get("location")
-                        if not location:
-                            raise UnsafeUrlError("redirect with no Location header")
+                        location = response.headers["location"]
                         current_url = str(response.url.join(location))
                         continue
 

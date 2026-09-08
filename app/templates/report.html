@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Run {{ run.id }} — {{ run.logical_date }}</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+    h1 { font-size: 1.4rem; }
+    h2 { margin-top: 2.5rem; border-bottom: 2px solid #ddd; padding-bottom: 0.3rem; }
+    .story { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+    .story h3 { margin: 0 0 0.3rem; }
+    .meta { color: #555; font-size: 0.85rem; margin-bottom: 0.5rem; }
+    .flags { color: #a00; font-weight: bold; }
+    .axes { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.5rem; margin-top: 0.5rem; }
+    .axis { background: #f7f7f7; border-radius: 6px; padding: 0.4rem 0.6rem; font-size: 0.85rem; }
+    .axis b { display: block; }
+    .sources a { margin-right: 0.6rem; font-size: 0.85rem; }
+    .status-failed { color: #a00; }
+  </style>
+</head>
+<body>
+  <h1>Run {{ run.id }} — logical date {{ run.logical_date }} — stage: {{ run.stage }}</h1>
+  <p class="meta">
+    Started {{ run.started_at }}{% if run.finished_at %} — finished {{ run.finished_at }}{% endif %}.
+    {{ scored_count }} of {{ funneled_count }} funneled clusters scored.
+  </p>
+
+  {% if run.source_outcomes %}
+  <h2>Sources</h2>
+  <ul>
+    {% for source_id, outcome in run.source_outcomes.items() %}
+    <li class="{{ 'status-failed' if not outcome.ok }}">
+      Source {{ source_id }}: {{ 'ok' if outcome.ok else 'FAILED' }}
+      {% if outcome.new_articles %} — {{ outcome.new_articles }} new articles{% endif %}
+      {% if outcome.error %} — {{ outcome.error }}{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  <h2>Lineup ({{ selected|length }})</h2>
+  {% for story in selected %}
+    {% include "_story_card.html" %}
+  {% else %}
+    <p>No stories selected.</p>
+  {% endfor %}
+
+  <h2>Alternates ({{ alternates|length }})</h2>
+  {% for story in alternates %}
+    {% include "_story_card.html" %}
+  {% else %}
+    <p>No alternates.</p>
+  {% endfor %}
+</body>
+</html>

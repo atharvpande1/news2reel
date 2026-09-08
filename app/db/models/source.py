@@ -1,10 +1,11 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Integer, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import JSON, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from app.db.base import Base
+from app.db.types import UTCDateTime
 
 
 class Source(Base):
@@ -15,6 +16,7 @@ class Source(Base):
     __tablename__ = "sources"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    articles: Mapped[list["Article"]] = relationship(back_populates="source")  # noqa: F821
     name: Mapped[str] = mapped_column(String, nullable=False)
     feed_url: Mapped[str] = mapped_column(String, nullable=False)
     language: Mapped[str] = mapped_column(String, nullable=False)
@@ -32,15 +34,15 @@ class Source(Base):
     etag: Mapped[str | None] = mapped_column(String, default=None)
     last_modified: Mapped[str | None] = mapped_column(String, default=None)
 
-    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    last_success_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), default=None)
     last_error: Mapped[str | None] = mapped_column(String, default=None)
-    last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    last_error_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), default=None)
 
-    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    archived_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), default=None)
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        UTCDateTime(), server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
     )

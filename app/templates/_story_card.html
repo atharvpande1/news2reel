@@ -1,0 +1,21 @@
+<div class="story">
+  <h3>{{ story.headline }}</h3>
+  <div class="meta">
+    {{ story.category }} · {{ story.locality.name }} ·
+    {{ story.effective_masthead_count }} masthead(s) ({{ story.raw_masthead_count }} raw) ·
+    status: {{ story.status }} · videoability: {{ "%.2f"|format(story.videoability.score) }}
+  </div>
+  {% if story.sensitivity_flags %}
+  <div class="flags">Flags: {{ story.sensitivity_flags|join(", ") }}</div>
+  {% endif %}
+  <div class="axes">
+    {% for axis, reason in story.score_reasons.items() %}
+    <div class="axis"><b>{{ axis }}: {{ "%.1f"|format(story.scores[axis]) }}</b>{{ reason }}</div>
+    {% endfor %}
+  </div>
+  <div class="sources">
+    {% for source in story.sources %}
+    <a href="{{ source.url|safe_url }}" target="_blank" rel="noopener">{{ source.source_name }}</a>
+    {% endfor %}
+  </div>
+</div>
