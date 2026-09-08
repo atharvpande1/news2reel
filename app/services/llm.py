@@ -69,24 +69,33 @@ class LlmClient(Protocol):
     def complete(self, *, model: str, system: str, prompt: str) -> LlmResponse: ...
 
 
-class AnthropicClient:
+class OpenAIClient:
     """Real provider, used outside tests. Constructing this without
     settings.llm_api_key set raises immediately, rather than failing
-    confusingly on the first call."""
+    confusingly on the first call. Uses the Responses API — the interface
+    OpenAI recommends for the GPT-5 series over the older Chat Completions
+    API."""
 
     def __init__(self, api_key: str) -> None:
-        import anthropic  # local import: keeps the SDK optional at module load
+        import openai  # local import: keeps the SDK optional at module load
 
-        self._client = anthropic.Anthropic(api_key=api_key)
+        self._client = openai.OpenAI(api_key=api_key)
 
     def complete(self, *, model: str, system: str, prompt: str) -> LlmResponse:
-        response = self._client.messages.create(
+        response = self._client.responses.create(
             model=model,
-            max_tokens=1024,
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
+            input=[
+                {"role": "developer", "content": system},
+                {"role": "user", "content": prompt},
+            ],
         )
-        text = "".join(block.text for block in response.content if block.type == "text")
+        text = "".join(
+            content.text
+            for item in response.output
+            if hasattr(item, "content")
+            for content in item.content
+            if hasattr(content, "text")
+        )
         return LlmResponse(
             text=text,
             prompt_tokens=response.usage.input_tokens,
@@ -134,7 +143,7 @@ def build_client(settings: Settings) -> LlmClient:
     configured, rather than failing confusingly on the first call."""
     if not settings.llm_api_key:
         raise RuntimeError("NEWS2REEL_LLM_API_KEY is not set — cannot score clusters")
-    return AnthropicClient(settings.llm_api_key)
+    return OpenAIClient(settings.llm_api_key)
 
 
 class ScoringError(Exception):

@@ -67,10 +67,14 @@ class Settings(BaseSettings):
     seen_similarity_threshold: float = 0.4
 
     # services/llm.py — retry with backoff, never a bare API call. No key
-    # means score_cluster raises before ever constructing AnthropicClient;
-    # the test suite always injects a fake LlmClient instead.
+    # means score_cluster raises before ever constructing OpenAIClient; the
+    # test suite always injects a fake LlmClient instead.
     llm_api_key: str | None = None
-    llm_model: str = "claude-sonnet-5"
+    # Lightest tier — cluster scoring is a high-volume, well-specified
+    # extraction task (five axis scores + category + locality + a bool
+    # against a strict schema), not open-ended reasoning; funnel width
+    # (~30 clusters/run) makes per-call cost the thing to keep down.
+    llm_model: str = "gpt-5-nano"
     llm_max_attempts: int = 3
     llm_retry_backoff_seconds: float = 1.0
 

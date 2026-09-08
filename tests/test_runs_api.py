@@ -2,7 +2,7 @@
 
 POST /runs is tested against its immediate contract (202, idempotency,
 force=true) with the background pipeline stubbed out — BackgroundTasks would
-otherwise reach for the real production SessionLocal/AnthropicClient (see
+otherwise reach for the real production SessionLocal/OpenAIClient (see
 pipeline.execute_run_in_background), which is the wrong thing to exercise in
 an API-layer test. Story/report reads are tested against data seeded by a
 direct run_pipeline() call against the test's own db_session — the same
