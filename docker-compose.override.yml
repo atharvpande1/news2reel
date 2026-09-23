@@ -1,0 +1,17 @@
+# Local development. Compose loads this automatically with docker-compose.yml.
+services:
+  db:
+    env_file: .env.local
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  api:
+    build:
+      args:
+        UV_SYNC_ARGS: ""
+    env_file: .env.local
+    volumes:
+      - .:/app
+    command: sh -c "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    ports:
+      - "127.0.0.1:8000:8000"

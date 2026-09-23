@@ -8,3 +8,13 @@ wheels/
 
 # Virtual environments
 .venv
+
+# SQLite-era archives — the DB now lives in the pgdata volume.
+*.db
+*.db-wal
+*.db-shm
+
+# Secrets. The .example templates are committed.
+.env*
+!.env*.example
+

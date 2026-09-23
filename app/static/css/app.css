@@ -1,0 +1,2878 @@
+/* Feedcast — a picking tool for a local newsroom's social desk.
+ *
+ * The job is triage: scan the night's local stories, mark the ones worth
+ * posting, get a prompt out. So selection is the loudest thing on the page and
+ * everything else stays quiet.
+ *
+ * Colour comes from cheap four-colour newsprint: process cyan marks a
+ * selection, magenta is reserved for the one action that leaves the feed.
+ * Two inks, used flat — no gradients, no soft shadows.
+ */
+
+:root {
+  --ground: #e6e5e1;
+  --paper: #fff;
+  --paper-sunk: #f4f3f0;
+
+  --ink: #17181c;
+  --ink-soft: #5b5c62;
+  --ink-faint: #8b8c92;
+
+  --rule: #cfcdc7;
+  --rule-strong: #a9a7a1;
+
+  --cyan: #006d9c;
+  --cyan-tint: #e1eef5;
+  --magenta: #b21e5f;
+  --magenta-tint: #f7e6ed;
+
+  --warn: #8a5b00;
+  --bad: #ad2b21;
+  --good: #1f6b45;
+
+  --step: 0.5rem;
+  --radius: 3px;
+  --measure: 68ch;
+
+  /* The type scale the logged-in app already uses, named so a page drawn from
+   * a mock-up (the login) lands on it instead of on the mock-up's own pixels.
+   * The login once used 18px text and 60px controls against the feed's 15px
+   * and ~36px, and the wordmark visibly shrank on the way in. */
+  --text-sm: 0.8125rem; /* 13px — meta, chips, the picker */
+  --text-base: 15px; /* body */
+  --text-lg: 1.0625rem; /* 17px — card headlines */
+  --wordmark: 1.3rem; /* one size wherever the brand appears */
+  /* A primary input or button — taller than the feed's chips because a form
+   * field is a target, not a filter. */
+  --control-h: 2.625rem;
+
+  /* Newsreader is drawn for reading news on a screen, so it holds at headline
+   * size in a dense grid. Noto Serif Devanagari is listed but not loaded —
+   * Marathi and Hindi headlines fall back to the system copy rather than
+   * costing every reader a third font file. */
+  --face-head: "Newsreader", "Noto Serif Devanagari", Georgia, serif;
+  --face-ui: "Archivo", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --face-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* The UA rule for [hidden] is display:none at the lowest specificity, so any
+ * component that sets its own display silently ignores it. */
+[hidden] {
+  display: none !important;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font: 400 var(--text-base)/1.5 var(--face-ui);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: var(--cyan);
+}
+
+:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
+.shell {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 calc(var(--step) * 2);
+}
+
+/* ---------- masthead ---------------------------------------------------- */
+
+.masthead {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--ground);
+  border-bottom: 1px solid var(--rule);
+}
+
+.masthead__inner {
+  display: flex;
+  align-items: baseline;
+  gap: calc(var(--step) * 3);
+  padding: calc(var(--step) * 2) 0 0;
+}
+
+.wordmark {
+  font-family: var(--face-head);
+  font-size: var(--wordmark);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.masthead__where {
+  font-size: 0.8125rem;
+  color: var(--ink-faint);
+}
+
+.masthead__logout {
+  margin-left: auto;
+}
+
+/* The city switcher. Sits beside the wordmark because which city you are in is
+ * part of where you are, not a filter you applied. */
+.picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--paper);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.picker:hover {
+  border-color: var(--ink);
+}
+
+.picker__caret {
+  color: var(--ink-faint);
+  font-size: 0.6875rem;
+}
+
+/* The city menu. Tiles rather than a list: a grid of short names is quicker to
+ * scan than a column of them, and it is the shape people already expect from a
+ * city picker. */
+.citypicker__head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--step);
+  padding: calc(var(--step) * 2) calc(var(--step) * 2.5);
+  background: var(--paper);
+  border-bottom: 1px solid var(--rule);
+}
+
+.citypicker__close {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 2px 6px;
+  border-radius: var(--radius);
+  color: var(--ink-faint);
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.citypicker__close:hover {
+  background: var(--paper-sunk);
+  color: var(--ink);
+}
+
+.citypicker__body {
+  padding: calc(var(--step) * 2.5);
+}
+
+/* Its own rule rather than .input, which is pinned to 9rem — a search field
+ * narrower than its own placeholder. */
+.citysearch {
+  width: 100%;
+  margin-bottom: calc(var(--step) * 2);
+  padding: 8px 11px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--paper);
+  /* 16px exactly. Mobile Safari zooms the whole page when a smaller input takes
+   * focus, and the body font here is 15px. */
+  font-size: 1rem;
+}
+
+.citysearch:focus {
+  outline: none;
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 2px var(--cyan-tint);
+}
+
+.citygrid {
+  display: grid;
+  gap: var(--step);
+  /* auto-fill down to 8.5rem, so the grid drops to two columns on a phone with
+   * no breakpoint of its own. */
+  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+}
+
+.citytile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: calc(var(--step) * 1.5);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper);
+  text-align: left;
+  cursor: pointer;
+}
+
+.citytile:hover {
+  border-color: var(--ink);
+}
+
+.citytile[aria-pressed="true"] {
+  border-color: var(--cyan);
+  background: var(--cyan-tint);
+}
+
+.citytile__name {
+  font-weight: 600;
+  font-size: 0.9375rem;
+}
+
+.citytile__state {
+  font-size: 0.75rem;
+  color: var(--ink-faint);
+}
+
+.citytile__warn {
+  font-size: 0.75rem;
+  color: var(--warn);
+}
+
+.citytile__now {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--cyan);
+}
+
+.citygrid__empty {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: calc(var(--step) * 2) 0;
+  color: var(--ink-soft);
+  font-size: 0.875rem;
+  text-align: center;
+}
+
+.nav {
+  display: flex;
+  gap: calc(var(--step) * 3);
+  margin-top: var(--step);
+}
+
+.nav__link {
+  appearance: none;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 0 0 calc(var(--step) * 1.25);
+  font-size: 0.9375rem;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.nav__link:hover {
+  color: var(--ink);
+}
+
+.nav__link[aria-current="page"] {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+  font-weight: 600;
+}
+
+.view {
+  padding: calc(var(--step) * 3) 0 calc(var(--step) * 14);
+}
+
+/* ---------- filters ----------------------------------------------------- */
+
+/* Each row on its own line, so neither filter row scrolls the other out of
+ * reach. Grid rather than a column flex container on purpose: a flex child's
+ * `flex-basis` would be read as a HEIGHT here, which is precisely how these
+ * chips first came out 22rem tall. */
+.filters {
+  display: grid;
+  gap: var(--step);
+  margin-bottom: calc(var(--step) * 2.5);
+}
+
+/* The sort toggle and the refresh button share a line; the two filter rows get
+ * one each, so neither scrolls the other out of reach on a narrow screen. */
+.filters__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--step);
+  padding-top: calc(var(--step) * 1.5);
+  border-top: 1px solid var(--rule);
+}
+
+/* Icon + name ahead of a row's chips, e.g. "Category" or "Sort by". A label,
+ * not a chip: fixed weight, no border, never clickable. */
+.filter-label {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.filter-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: calc(var(--step) * 1.25);
+  min-width: 0;
+}
+
+/* A toggle, not a filter: it never overflows, so it must not stretch or scroll
+ * like the rows above it. */
+.filter-row--sort {
+  flex: 1 1 auto;
+}
+
+.chiprow--sort {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+/* No `flex` shorthand: a chiprow is a grid item now, and the `flex: 1 1 22rem`
+ * this carried from its old life sharing a row with the refresh button is what
+ * made the chips 22rem tall the moment the container turned vertical.
+ *
+ * Wraps rather than scrolls, and `overflow: visible` so the More panel below can
+ * escape the row instead of being clipped by it. The row no longer overflows in
+ * the first place — the uncommon categories moved behind More — but wrap is what
+ * keeps that true at phone width too. */
+.chiprow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-width: 0;
+  overflow: visible;
+}
+
+/* The overflow categories, behind a native <details>. The summary is styled as
+ * a chip so the control reads as one more chip in the row rather than a
+ * different kind of thing. */
+.chipmore {
+  position: relative;
+  flex: none;
+}
+
+.chipmore > summary {
+  display: inline-flex;
+  align-items: center;
+  list-style: none;
+}
+
+.chipmore > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Outlined, not filled: a filled chip means "this filter is on", and More is
+ * never itself a filter. The count beside it is what says one is on. */
+.chip--more-on {
+  border-color: var(--ink);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.chipmore__panel {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  left: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  width: max-content;
+  max-width: min(22rem, 80vw);
+  padding: 10px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--paper);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 12%);
+}
+
+.chip {
+  flex: none;
+  padding: 6px 13px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--paper);
+  color: var(--ink-soft);
+  font-size: 0.8125rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chip:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.chip[aria-pressed="true"] {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+
+/* Sort chips carry a small icon alongside their label; selection otherwise
+ * matches every other chip's solid-ink fill (.chip[aria-pressed="true"]) so a
+ * chosen sort reads the same as a chosen filter, not a different control. */
+.chip--icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8125rem;
+  color: var(--ink-soft);
+}
+
+.input {
+  width: 9rem;
+  padding: 5px 9px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--paper);
+}
+
+.input::placeholder {
+  color: var(--ink-faint);
+}
+
+/* ---------- the grid ---------------------------------------------------- */
+
+.grid {
+  display: grid;
+  gap: calc(var(--step) * 1.5);
+  grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+}
+
+/* The card is the whole hit target: this is a picking tool, so selecting is
+ * the primary gesture and gets the primary surface. Reading the original
+ * article is the secondary one, on its own small link in the footer. */
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: calc(var(--step) * 1.75) calc(var(--step) * 1.75) calc(var(--step) * 1.5);
+  padding-left: calc(var(--step) * 2.5);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  text-align: left;
+  cursor: pointer;
+}
+
+.card::before {
+  content: "";
+  position: absolute;
+  inset: -1px auto -1px -1px;
+  width: 5px;
+  background: transparent;
+  border-radius: var(--radius) 0 0 var(--radius);
+  transition: background 120ms ease;
+}
+
+.card:hover {
+  border-color: var(--rule-strong);
+}
+
+.card:hover::before {
+  background: var(--rule);
+}
+
+.card[aria-pressed="true"] {
+  border-color: var(--cyan);
+}
+
+.card[aria-pressed="true"]::before {
+  background: var(--cyan);
+}
+
+.card[aria-pressed="true"] {
+  background: #f7fbfd;
+}
+
+.card[aria-pressed="true"] .card__slide {
+  display: grid;
+}
+
+/* The slide number is information, not ornament: it is the position this story
+ * will take in the carousel, and the order is something the editor can be
+ * wrong about. Inline, not floated into the corner — the score panel owns the
+ * top right, and an absolutely positioned badge would sit on top of it. */
+.card__slide {
+  /* Shown only on a selected card — see the [aria-pressed] rule above. */
+  display: none;
+  flex: none;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  background: var(--cyan);
+  color: var(--paper);
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Tags left, score panel right. align-items: flex-start so a wrapping tag row
+ * grows downward without stretching the panel with it. */
+.card__top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--step);
+  margin-bottom: calc(var(--step) * 1.5);
+}
+
+.card__top-left {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.card__headline {
+  margin: 0 0 calc(var(--step) * 1.25);
+  font-family: var(--face-head);
+  font-size: 1.0625rem;
+  font-weight: 500;
+  line-height: 1.32;
+  letter-spacing: -0.005em;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Three lines of the feed summary, clamped. 14% of articles have none and
+ * simply omit the element rather than reserving empty space. */
+.card__summary {
+  margin: 0 0 calc(var(--step) * 1.25);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--ink-soft);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Initials, not a masthead logo: a favicon is a third-party request per card,
+ * and safeUrl() cannot vouch for what comes back. */
+.card__avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 1.375rem;
+  height: 1.375rem;
+  border: 1px solid var(--rule);
+  border-radius: 50%;
+  background: var(--paper-sunk);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--ink-soft);
+}
+
+.card__foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: calc(var(--step) * 1.25);
+  border-top: 1px solid var(--paper-sunk);
+  font-size: 0.75rem;
+  color: var(--ink-faint);
+}
+
+.card__source {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-soft);
+}
+
+.card__when {
+  margin-left: auto;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.card__open {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin: -0.25rem -0.4rem -0.25rem 2px;
+  border-radius: var(--radius);
+  color: var(--ink-faint);
+}
+
+.card__open:hover {
+  background: var(--paper-sunk);
+  color: var(--cyan);
+}
+
+.tick {
+  flex: none;
+  width: 0.875rem;
+  height: 0.875rem;
+  color: var(--cyan);
+}
+
+/* ---------- badges ------------------------------------------------------ */
+
+/* Only rendered once the classifier has actually answered — see badges() in
+ * js/feed.js. A story with no category yet simply has no category chip. */
+.tag {
+  padding: 2px 7px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: var(--paper-sunk);
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+/* The engagement panel. Deliberately NOT a .tag: the category is a fact about
+ * the story, this is our judgement about the post, and a second chip made it
+ * read as one more attribute of equal standing. Its own tinted block in the
+ * corner instead — see engagementPanel() in js/feed.js. */
+.card__rating {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 5px 9px 4px;
+  border-radius: var(--radius);
+  background: var(--paper-sunk);
+  cursor: help;
+}
+
+.card__rating-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.card__rating-emoji {
+  font-size: 0.875rem;
+  line-height: 1;
+}
+
+/* Tabular figures so the number keeps its width as it changes down a column. */
+.card__rating-value {
+  font-family: var(--face-ui);
+  font-size: 1rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+  color: var(--ink);
+}
+
+.card__rating-help {
+  display: grid;
+  place-items: center;
+  width: 0.9375rem;
+  height: 0.9375rem;
+  border: 1px solid var(--rule-strong);
+  border-radius: 50%;
+  font-size: 0.5625rem;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--ink-faint);
+}
+
+.card__rating-label {
+  font-size: 0.5625rem;
+  letter-spacing: 0.02em;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+/* The spectrum: cool and flat at the bottom, warm at the top. Only the two top
+ * bands get colour, so a glance down the feed picks them out rather than
+ * reading five competing tints. */
+.card__rating--3 {
+  background: var(--cyan-tint);
+}
+
+.card__rating--4 {
+  background: var(--magenta-tint);
+}
+
+.card__rating--5 {
+  background: var(--magenta);
+}
+
+.card__rating--5 .card__rating-value {
+  color: var(--paper);
+}
+
+.card__rating--5 .card__rating-label {
+  color: rgb(255 255 255 / 0.75);
+}
+
+.card__rating--5 .card__rating-help {
+  border-color: rgb(255 255 255 / 0.5);
+  color: rgb(255 255 255 / 0.8);
+}
+
+/* A token for the categories that carry volume. Not every value has one: the
+ * rest fall through to the neutral base .tag above, as "other" always has, so
+ * adding a category is not automatically a colour decision. Ten hand-picked
+ * triples stay distinguishable at chip size; sixteen would not. */
+.tag--crime { background: #fbe9e7; border-color: #f0cdc8; color: #9c2b1c; }
+.tag--accident { background: #fdeee0; border-color: #f2d5b6; color: #8a5116; }
+.tag--civic { background: #e4eefb; border-color: #c6d9f1; color: #1c4c86; }
+.tag--politics { background: #eae9f8; border-color: #d2d0ee; color: #443c8c; }
+.tag--business { background: #e3f2ea; border-color: #c3ddcf; color: #1f6b45; }
+.tag--education { background: #f1e9f7; border-color: #ddcbea; color: #6a3a8c; }
+.tag--health { background: #e0f1f1; border-color: #bfdcdc; color: #16615f; }
+.tag--sport { background: #edf3de; border-color: #d6e2bb; color: #4f6316; }
+.tag--weather { background: #e2f0f6; border-color: #c2dce8; color: #1a5c74; }
+.tag--culture { background: #fbe8f2; border-color: #eecadd; color: #8d2c63; }
+
+/* ---------- buttons ----------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--paper);
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.btn:hover {
+  border-color: var(--ink);
+}
+
+.btn--primary {
+  background: var(--magenta);
+  border-color: var(--magenta);
+  color: var(--paper);
+  font-weight: 600;
+}
+
+.btn--primary:hover {
+  background: #96174e;
+  border-color: #96174e;
+}
+
+.btn--ink {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+
+.btn--quiet {
+  border-color: transparent;
+  background: none;
+  color: var(--ink-soft);
+}
+
+.btn--quiet:hover {
+  color: var(--ink);
+  border-color: var(--rule-strong);
+}
+
+.btn--small {
+  padding: 4px 9px;
+  font-size: 0.75rem;
+}
+
+.btn[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* The refresh button's own disabled states are legible, not dimmed — a greyed-
+ * out "Refresh in 12s" reads as broken, not as "wait". Higher specificity than
+ * .btn[disabled] above so it wins regardless of source order. */
+.btn.refresh-btn[disabled] {
+  cursor: default;
+}
+
+.btn.refresh-btn.is-loading[disabled] {
+  opacity: 1;
+}
+
+.btn.refresh-btn.is-cooldown[disabled] {
+  opacity: 1;
+  color: var(--ink-faint);
+}
+
+.spinner {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- the tray ---------------------------------------------------- */
+
+/* Rendered inside the view, never on <body>: clearing the view has to take the
+ * tray with it, or a selection made on Discover follows you into Sources. */
+.tray {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  background: var(--ink);
+  color: var(--paper);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.tray__inner {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--step) * 1.5);
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: calc(var(--step) * 1.5) calc(var(--step) * 2);
+}
+
+.tray__count {
+  font-size: 0.9375rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.tray__count b {
+  font-weight: 600;
+}
+
+.tray__note {
+  font-size: 0.8125rem;
+  color: #b8b9bf;
+}
+
+.tray .btn--quiet {
+  color: #b8b9bf;
+}
+
+.tray .btn--quiet:hover {
+  color: var(--paper);
+  border-color: #4a4b52;
+}
+
+.tray__spacer {
+  margin-left: auto;
+}
+
+/* ---------- panels ------------------------------------------------------ */
+/* Shared by the cities page, the sources list and the city picker — not the
+ * carousel canvas, which has its own furniture below. */
+
+.panel {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.panel__title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+/* ---------- creative canvas --------------------------------------------- */
+
+/* The one view that claims the viewport instead of scrolling. body's only
+ * children are .masthead and main.view, so making body the flex column lets
+ * .view take exactly what the masthead leaves — no calc(100dvh - 9.5rem) to go
+ * stale the next time the masthead grows a row. Scoped to this route, so the
+ * feed keeps the bottom padding its sticky tray needs. */
+body[data-view="studio"] {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+body[data-view="studio"] .view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: calc(var(--step) * 2);
+}
+
+.studio__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--step);
+  margin-bottom: var(--step);
+}
+
+.studio__spacer {
+  flex: 1;
+}
+
+.studio__rule {
+  width: 1px;
+  height: 1.75rem;
+  background: var(--rule);
+}
+
+.studio__title {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+}
+
+.studio__name {
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.studio__meta {
+  font-size: 0.75rem;
+  color: var(--ink-faint);
+}
+
+/* The dot reads as a status light, so it has to mean something: it is lit
+ * because the deck genuinely reaches sessionStorage on every change. The
+ * tooltip carries the part that matters — this tab only. */
+.studio__saved {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: calc(var(--step) * 1.5);
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+  cursor: help;
+}
+
+.studio__dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--good);
+}
+
+/* A way back, not a call to action: no border, no fill, the same weight as the
+ * page's own text. */
+.studio__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 2px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 0.875rem;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.studio__back:hover {
+  color: var(--ink);
+}
+
+.studio {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--step) * 2);
+}
+
+/* The preview row takes whatever height is left; min-height: 0 is what lets it
+ * actually shrink rather than being floored by the canvas's own size. */
+/* Preview left and dominant, inspector right at a fixed width. The preview is
+ * the page — it gets the height and everything else works around it. */
+.stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  gap: calc(var(--step) * 1.5);
+}
+
+/* Arrows flank the slide. The inspector takes a fixed column beside this one
+ * and the slide is sized by height, so there are gutters to put them in. */
+.stage__slide {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--step) * 2);
+  min-height: 0;
+  min-width: 0;
+}
+
+/* Sized off height, not width: the row's height is the scarce dimension, and
+ * width: auto keeps 4:5 without the slide ever forcing the page taller. */
+.stage__canvas {
+  min-height: 0;
+  height: 100%;
+  width: auto;
+  border-radius: var(--radius);
+  background: var(--paper);
+  box-shadow: 0 1px 3px rgb(23 24 28 / 0.08);
+}
+
+/* Round, floating beside the slide. Flanking rather than under it, so stepping
+ * through the deck never moves the eye away from what changed. */
+.stage__arrow {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid var(--rule);
+  border-radius: 50%;
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgb(23 24 28 / 0.08);
+}
+
+.stage__arrow:hover:not(:disabled) {
+  border-color: var(--ink);
+}
+
+/* Kept in place rather than hidden at the ends of the deck: a control that
+ * vanishes shifts the slide sideways every time you reach slide one. */
+.stage__arrow:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* ---------- slide inspector --------------------------------------------- */
+
+/* Secondary to the slide, and shaped to say so: sized to its content rather
+ * than stretched, and set beside the 4:5 preview rather than under it.
+ *
+ * Top-aligned and 26rem wide, which together with the two-row textarea is what
+ * keeps the whole panel — source and the category/engagement row included
+ * — above the fold. Centred at 20rem it overflowed its own max-height on a
+ * short viewport and scrolled the metadata out of sight, which read as the
+ * metadata being missing. max-height still holds the one-screen rule for a
+ * panel that genuinely is too long. */
+.insp {
+  flex: none;
+  align-self: flex-start;
+  width: min(26rem, 100%);
+  max-width: 100%;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper);
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.insp__head {
+  display: flex;
+  align-items: center;
+  gap: var(--step);
+  padding: calc(var(--step) * 1.75) calc(var(--step) * 2);
+  border-bottom: 1px solid var(--rule);
+}
+
+.insp__which {
+  font-family: var(--face-head);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.insp__chip {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--paper-sunk);
+  font-size: 0.6875rem;
+  color: var(--ink-soft);
+}
+
+.insp__block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: calc(var(--step) * 1.75) calc(var(--step) * 2);
+  border-bottom: 1px solid var(--rule);
+}
+
+.insp__label-row {
+  display: flex;
+  align-items: center;
+  gap: var(--step);
+}
+
+.insp__label {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--ink-faint);
+}
+
+/* The headline was longer than the slide's text box and lost its last words.
+ * Loud on purpose — it is the one thing on this screen that will ship looking
+ * finished while not being. */
+.insp__warn {
+  padding: 2px 7px;
+  border-radius: 2px;
+  background: var(--magenta-tint);
+  color: var(--magenta);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  cursor: help;
+}
+
+.insp__count {
+  margin-left: auto;
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faint);
+}
+
+.insp__text {
+  width: 100%;
+  padding: calc(var(--step) * 1.25);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper);
+  font: 400 0.875rem/1.5 var(--face-ui);
+  color: var(--ink);
+  resize: vertical;
+}
+
+.insp__text:focus {
+  outline: none;
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 2px var(--cyan-tint);
+}
+
+.insp__source {
+  display: flex;
+  align-items: center;
+  gap: var(--step);
+}
+
+/* Tinted rather than outlined, per the mockup. Cyan already means
+ * "interactive" everywhere else in the app, so this introduces no new colour. */
+.insp__open {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  border: 1px solid var(--cyan-tint);
+  border-radius: var(--radius);
+  background: var(--cyan-tint);
+  color: var(--cyan);
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.insp__open:hover {
+  border-color: var(--cyan);
+}
+
+/* Initials, not a masthead logo: a favicon is a third-party request and
+ * safeUrl() cannot vouch for what comes back. */
+.insp__avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border: 1px solid var(--rule);
+  border-radius: 50%;
+  background: var(--paper-sunk);
+  font-size: 0.5625rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.insp__outlet {
+  font-size: 0.875rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The signals that got the story picked, so the decision is legible from the
+ * slide rather than only from the card it came off. Last block in the panel, so
+ * no bottom rule. */
+.insp__signals {
+  display: flex;
+  align-items: stretch;
+  padding: calc(var(--step) * 1.75) calc(var(--step) * 2);
+}
+
+.insp__signal {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  padding-left: var(--step);
+}
+
+.insp__signal:first-child {
+  padding-left: 0;
+}
+
+.insp__signal + .insp__signal {
+  border-left: 1px solid var(--rule);
+}
+
+.insp__signal-label {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.5625rem;
+  color: var(--ink-faint);
+}
+
+.insp__signal-value {
+  font-size: 0.875rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.insp__engagement {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.insp__emoji {
+  font-size: 0.875rem;
+  line-height: 1;
+}
+
+.insp__info {
+  display: grid;
+  place-items: center;
+  width: 0.9375rem;
+  height: 0.9375rem;
+  border: 1px solid var(--rule-strong);
+  border-radius: 50%;
+  font-size: 0.5625rem;
+  font-weight: 600;
+  font-style: italic;
+  line-height: 1;
+  color: var(--ink-faint);
+  cursor: help;
+}
+
+/* ---------- add-story dialogs ------------------------------------------- */
+
+.addopt {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: calc(var(--step) * 1.5);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.addopt:hover {
+  border-color: var(--ink);
+}
+
+.addopt__title {
+  font-weight: 600;
+  font-size: 0.9375rem;
+}
+
+.addopt__body {
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--ink-soft);
+}
+
+/* The story picker. A sheet, not the 38rem dialog this replaced: the list it
+ * had showed a title and a score and nothing else, so choosing what to add to a
+ * carousel meant choosing blind.
+ *
+ * Still not the feed's cards. Discover is for browsing — big cards, a summary,
+ * a refresh button. This is for choosing fast against a deck that already
+ * exists, so the rows are dense and the headline is the only thing set large. */
+.pickhead {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--step);
+  padding: calc(var(--step) * 2.5) calc(var(--step) * 3) calc(var(--step) * 2);
+  border-bottom: 1px solid var(--rule);
+}
+
+.pickhead__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.pickhead__title {
+  font-family: var(--face-head);
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.pickhead__sub {
+  margin: 3px 0 0;
+  font-size: 0.8125rem;
+  color: var(--ink-soft);
+}
+
+/* Prominent, per the brief: the cap is the one thing about this sheet worth
+ * knowing before you start clicking. Repeated in the footer, because at the
+ * bottom of a long list the header has scrolled out of the conversation. */
+.pickcount {
+  flex: none;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: var(--paper-sunk);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.pickhead__close {
+  flex: none;
+  border: 0;
+  background: none;
+  padding: 4px 6px;
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--ink-faint);
+  cursor: pointer;
+}
+
+.pickhead__close:hover {
+  color: var(--ink);
+}
+
+/* Compact by being cramped, not by being different: the same chiprows Discover
+ * uses, in a tighter column. .chiprow already scrolls horizontally, so a full
+ * sixteen-category row costs one line here too. */
+.pickfilters {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--step);
+  padding: calc(var(--step) * 1.5) calc(var(--step) * 3);
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper-sunk);
+}
+
+.picklist {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  padding: var(--step) calc(var(--step) * 3);
+}
+
+.pickrow {
+  display: flex;
+  align-items: flex-start;
+  gap: calc(var(--step) * 1.5);
+  padding: calc(var(--step) * 1.5);
+  border: 1px solid transparent;
+  border-bottom-color: var(--paper-sunk);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.pickrow:hover {
+  background: var(--paper-sunk);
+}
+
+/* Cyan, like every other selected thing in this app — magenta is reserved for
+ * the one action that leaves the screen, which on this sheet is the Add button
+ * two inches below. See the note at the top of this file. */
+.pickrow[aria-pressed="true"] {
+  border-color: var(--cyan);
+  background: #f7fbfd;
+}
+
+.pickrow[aria-pressed="true"] .pickrow__check {
+  border-color: var(--cyan);
+  background: var(--cyan);
+  color: var(--paper);
+}
+
+/* The cap is reached. Only the unpicked rows close — dropping one to make room
+ * is the way out, so a blanket disable would be a dead end. */
+.pickrow[aria-disabled="true"] {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pickrow[aria-disabled="true"]:hover {
+  background: none;
+}
+
+.pickrow__check {
+  flex: none;
+  margin-top: 2px;
+  display: grid;
+  place-items: center;
+  width: 1.125rem;
+  height: 1.125rem;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--paper);
+  /* Transparent rather than hidden: the box keeps its size either way, so
+   * selecting a row does not shift the headline beside it. */
+  color: transparent;
+}
+
+.pickrow__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.pickrow__top {
+  display: flex;
+  align-items: center;
+  gap: var(--step);
+}
+
+.pickrow__gap {
+  flex: 1;
+}
+
+/* Secondary metadata, deliberately quiet: the feed gives the score a whole
+ * panel because ranking is what Discover is for. Here the headline leads. */
+.pickrow__score {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+  cursor: help;
+}
+
+.pickrow__emoji {
+  font-size: 0.8125rem;
+  line-height: 1;
+}
+
+.pickrow__title {
+  font-family: var(--face-head);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.pickrow__meta {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--ink-faint);
+}
+
+.pickfoot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--step);
+  padding: calc(var(--step) * 2) calc(var(--step) * 3);
+  border-top: 1px solid var(--rule);
+  background: var(--paper);
+}
+
+.pickfoot__gap {
+  flex: 1;
+}
+
+/* ---------- gallery ----------------------------------------------------- */
+
+/* An archive, laid out as a grid rather than grouped under date headings: every
+ * card carries its own timestamp and the order is recency, so the headings were
+ * restating what each card already says. */
+/* The Gallery's own page padding. The 112px the other views carry at the
+ * bottom is clearance for Discover's sticky tray, which this page does not
+ * have — here it is just scroll with nothing in it. Less at the top too, so
+ * one more row of cards clears the fold. */
+body[data-view="gallery"] .view {
+  padding: calc(var(--step) * 2) 0 calc(var(--step) * 4);
+}
+
+/* State pills left, city select right — two axes, so two shapes. A second chip
+ * row would read as more of the same filter. */
+/* One row: state chips, then the city select and Create pushed right. The
+ * header line these came from held a single button and nothing else, which is
+ * the empty space that kept the first row of cards under the fold. */
+.gfilters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: calc(var(--step) * 1.5);
+  margin-bottom: calc(var(--step) * 2);
+}
+
+/* A little clear of the filter it now sits beside — it is the page's action,
+ * not a third way to narrow the list. */
+.gfilters__create {
+  margin-left: var(--step);
+}
+
+/* Loading and failure messages. Collapsed when empty — as plain .centered it
+ * padded 24px top and bottom whether or not it said anything, which is most
+ * of the time. */
+.gallery__status {
+  padding: var(--step) 0;
+  text-align: center;
+}
+
+.gallery__status:empty {
+  display: none;
+}
+
+/* Roomier than the feed's filter chips. Discover stacks three rows of them and
+ * has to stay compact; there are three here and they are the page's controls. */
+.gfilters .chip {
+  padding: 10px 18px;
+  border-color: var(--rule);
+  border-radius: 6px;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.gfilters .chip[aria-pressed="true"] {
+  border-color: var(--ink);
+}
+
+.gfilters__gap {
+  flex: 1;
+}
+
+.gfilters__city {
+  width: auto;
+  min-width: 10rem;
+  padding: 9px 11px;
+  border-radius: 6px;
+}
+
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: calc(var(--step) * 2);
+  align-items: start;
+}
+
+/* The empty state spans the grid rather than sitting in the first cell. */
+.gallery > .empty {
+  grid-column: 1 / -1;
+}
+
+.gcard {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--step) * 2);
+  padding: calc(var(--step) * 2);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--paper);
+  cursor: pointer;
+}
+
+.gcard:hover {
+  border-color: var(--rule-strong);
+}
+
+.gcard__head {
+  display: flex;
+  align-items: flex-start;
+  gap: calc(var(--step) * 1.5);
+  min-width: 0;
+}
+
+/* A file-type glyph, not a preview of the deck — see gallery.js's
+ * carouselIcon() for why the rendered slide it replaced was the wrong call. */
+.gcard__icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 3rem;
+  height: 3rem;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--paper-sunk);
+  color: var(--ink-soft);
+}
+
+.gcard__ident {
+  min-width: 0;
+}
+
+.gcard__city {
+  font-family: var(--face-head);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.gcard__when {
+  margin: 5px 0 0;
+  font-size: 0.8125rem;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.gcard__count {
+  margin: 4px 0 0;
+  font-size: 0.8125rem;
+  color: var(--ink-faint);
+}
+
+.gcard__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--step);
+}
+
+.gcard__gap {
+  flex: 1;
+}
+
+/* Status, not a .tag and not an action: this is what the editor has done with a
+ * deck. Draft is unfinished, downloaded has shipped — the two tints the app
+ * already owns, used flat. */
+.gtag {
+  padding: 5px 12px;
+  border-radius: 5px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: capitalize;
+}
+
+.gtag--draft {
+  background: var(--magenta-tint);
+  color: var(--magenta);
+}
+
+.gtag--downloaded {
+  background: var(--cyan-tint);
+  color: var(--cyan);
+}
+
+/* Said only when last_edited_at is actually past last_downloaded_at — the state
+ * stays "downloaded", because it did ship; this is the caveat on top. */
+.gcard__stale {
+  font-size: 0.75rem;
+  color: var(--warn);
+  cursor: help;
+}
+
+.gcard__drop {
+  flex: none;
+  display: grid;
+  place-items: center;
+  padding: 4px;
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--ink-faint);
+  cursor: pointer;
+}
+
+.gcard__drop:hover {
+  background: var(--paper-sunk);
+  color: var(--bad);
+}
+
+/* ---------- already used ------------------------------------------------ */
+
+/* On a feed card and on a picker row: this story is already in a deck. Quiet on
+ * purpose — it informs, it never blocks, because a follow-up on yesterday's
+ * story is a legitimate pick and only the editor knows. */
+.used {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: var(--paper-sunk);
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: var(--ink-faint);
+  white-space: nowrap;
+  cursor: help;
+}
+
+.used--downloaded {
+  border-color: var(--cyan-tint);
+  background: var(--cyan-tint);
+  color: var(--cyan);
+}
+
+/* ---------- filmstrip --------------------------------------------------- */
+
+/* The deck, in order, horizontal. The cards divide the width between them —
+ * flex: 1 1 0 with a cap — so ten fit rather than overflowing, and there is
+ * nothing to scroll in either direction. */
+.filmstrip {
+  flex: none;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: stretch;
+  gap: var(--step);
+}
+
+/* A miniature of the slide: the same drawSlide output, scaled by CSS, so the
+ * thumbnail and the export are the same pixels. See CLAUDE.md's invariants. */
+.thumb {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 8rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper);
+  cursor: grab;
+  overflow: hidden;
+}
+
+.thumb:active {
+  cursor: grabbing;
+}
+
+.thumb--active {
+  border-color: var(--magenta);
+  box-shadow: 0 0 0 1px var(--magenta);
+}
+
+.thumb__canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: var(--paper);
+}
+
+/* Both controls overlay the canvas — a cell this narrow has no room beside it. */
+.thumb__n {
+  position: absolute;
+  top: 4px;
+  left: 6px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faint);
+}
+
+.thumb__drop {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  border: 0;
+  background: var(--paper);
+  padding: 1px 5px;
+  border-radius: 2px;
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  color: var(--ink-faint);
+  cursor: pointer;
+}
+
+.thumb__drop:hover {
+  background: var(--magenta-tint);
+  color: var(--magenta);
+}
+
+/* Dashed and empty, so it reads as a slot rather than as a slide that failed
+ * to render. */
+.thumb--add {
+  border-style: dashed;
+  cursor: default;
+  justify-content: center;
+}
+
+.thumb__add {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 100%;
+  min-height: 5rem;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 0.6875rem;
+  color: var(--ink-faint);
+  cursor: pointer;
+}
+
+.thumb__add:hover {
+  color: var(--ink);
+}
+
+/* Two ways the one-screen layout stops being worth it: too short to give the
+ * preview a usable height, or too narrow to lay it out at all. Either one and
+ * the layout stops fighting for a single screen and just scrolls — a scrollbar
+ * is a better failure than a 90px slide. Comma is OR. */
+@media (max-height: 40rem), (max-width: 56rem) {
+  body[data-view="studio"] {
+    display: block;
+    height: auto;
+    overflow: visible;
+  }
+
+  body[data-view="studio"] .view {
+    display: block;
+    padding-bottom: calc(var(--step) * 4);
+  }
+
+  .studio {
+    display: block;
+  }
+
+  .stage {
+    display: block;
+  }
+
+  /* Still a row: the arrows keep flanking the slide, they just flank a
+   * width-sized one now. */
+  .stage__slide {
+    height: auto;
+    gap: var(--step);
+  }
+
+  .stage__canvas {
+    height: auto;
+    width: 100%;
+    max-width: 20rem;
+  }
+
+  .insp {
+    width: 100%;
+    margin-top: calc(var(--step) * 2);
+    overflow: visible;
+  }
+
+  /* Thumbnails stop dividing the width and keep a legible size instead, so the
+   * strip scrolls rather than shrinking ten slides into slivers. */
+  .filmstrip {
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+
+  .thumb {
+    flex: 0 0 5rem;
+  }
+}
+
+/* ---------- confirm dialog ---------------------------------------------- */
+
+.confirm {
+  display: grid;
+  gap: calc(var(--step) * 1.5);
+  padding: calc(var(--step) * 2.5);
+}
+
+.confirm__title {
+  margin: 0;
+  font-family: var(--face-head);
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+
+.confirm__body {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+
+.confirm__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--step);
+}
+
+/* ---------- cities ------------------------------------------------------ */
+/*
+ * An admin surface, not a reading one: the job is to see at a glance which
+ * feeds are pulling and which are not, so status is a column rather than a
+ * detail buried in a card.
+ *
+ * Radii here are larger than --radius (3px). That token is right for the dense
+ * newsprint grid the feed uses; these are wide standalone rows where 3px reads
+ * as an accident. Same licence .gcard already takes at 8px — page-local values,
+ * not a change to the token.
+ */
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--step) * 1.25);
+}
+
+/* The default .view reserves 112px at the bottom for Discover's sticky tray.
+ * Nothing floats over this page, so that is just dead space. */
+body[data-view="cities"] .view {
+  padding-bottom: calc(var(--step) * 6);
+}
+
+.cityhead {
+  display: flex;
+  align-items: flex-start;
+  gap: calc(var(--step) * 2);
+  margin-bottom: calc(var(--step) * 3);
+}
+
+.cityhead__title {
+  margin: 0;
+  font-family: var(--face-head);
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.cityhead__blurb {
+  max-width: 52ch;
+  margin: 5px 0 0;
+  font-size: 0.8125rem;
+  color: var(--ink-soft);
+}
+
+.cityhead__add {
+  flex: none;
+  padding: 9px 15px;
+  border-radius: 7px;
+  font-weight: 500;
+}
+
+.citytools {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--step) * 1.5);
+  margin-bottom: calc(var(--step) * 2);
+}
+
+/* .citysearch carries its own margin-bottom for the picker dialog it was
+ * written for; the toolbar spaces itself. */
+.citysearch__box {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+}
+
+.citysearch__icon {
+  position: absolute;
+  left: 12px;
+  display: inline-flex;
+  color: var(--ink-faint);
+  pointer-events: none;
+}
+
+.citysearch__box .citysearch {
+  margin-bottom: 0;
+  border-radius: 8px;
+}
+
+.citysearch--icon {
+  padding-left: 36px;
+}
+
+.citytools__filters {
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+
+.citytools__filters .chip {
+  padding: 7px 13px;
+  border-radius: 7px;
+  font-size: 0.8125rem;
+}
+
+.citytools__count {
+  flex: none;
+  font-size: 0.8125rem;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.citylist {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--step) * 1.5);
+}
+
+.citycard {
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--paper);
+}
+
+/* list-style and the webkit marker both have to go, or the browser draws its
+ * own triangle next to ours. Same reset .chipmore uses. */
+.citycard__head {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--step) * 1.5);
+  padding: calc(var(--step) * 2);
+  list-style: none;
+  cursor: pointer;
+}
+
+.citycard__head::-webkit-details-marker {
+  display: none;
+}
+
+.citycard__chevron {
+  display: inline-flex;
+  color: var(--ink-faint);
+  transition: transform 120ms ease;
+}
+
+.citycard[open] > .citycard__head .citycard__chevron {
+  transform: rotate(90deg);
+}
+
+.citycard__name {
+  font-family: var(--face-head);
+  font-size: 1.1875rem;
+  font-weight: 600;
+}
+
+.citycard__state {
+  font-size: 0.8125rem;
+  color: var(--ink-faint);
+}
+
+.citycard__gap {
+  flex: 1;
+}
+
+.citycard__count {
+  font-size: 0.8125rem;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+}
+
+.citycard__body {
+  border-top: 1px solid var(--rule);
+}
+
+.citycard__none,
+.citycard__archived {
+  margin: 0;
+  padding: calc(var(--step) * 2);
+}
+
+.citycard__archived {
+  padding-top: 0;
+  color: var(--ink-faint);
+}
+
+/* ---------- the feeds table --------------------------------------------- */
+
+.feeds {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.feeds th {
+  padding: calc(var(--step) * 1.25) calc(var(--step) * 1.5);
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-faint);
+  font-weight: 400;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.feeds th:first-child,
+.feeds td:first-child {
+  padding-left: calc(var(--step) * 2);
+}
+
+.feeds th:last-child,
+.feeds td:last-child {
+  padding-right: calc(var(--step) * 2);
+}
+
+.feeds td {
+  padding: calc(var(--step) * 1.5);
+  border-bottom: 1px solid var(--rule);
+  vertical-align: middle;
+}
+
+.feeds tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.feeds__name {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.feeds__flag {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink-faint);
+  font-size: 0.6875rem;
+  font-weight: 400;
+}
+
+/* The one cell allowed to be the flexible one — URLs are long and everything
+ * else in the row is short and worth reading whole. */
+.feeds__url {
+  width: 100%;
+  max-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-soft);
+}
+
+/* Underlining every row makes the table look like a link farm — the URL is
+ * reference text first and a link second. */
+.feeds__url a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.feeds__url a:hover {
+  text-decoration: underline;
+}
+
+.feeds__num {
+  white-space: nowrap;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The live-check result, dropped in beside the status. Block so a long error
+ * wraps under the label rather than stretching the column. */
+.feeds__check:not(:empty) {
+  display: block;
+  margin-top: 4px;
+}
+
+.feeds__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.feeds__actions .btn {
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+/* ---------- the per-row overflow menu ----------------------------------- */
+/*
+ * <details>, like .chipmore: click, keyboard and screen-reader behaviour come
+ * with the element, and there is no outside-click handler or focus trap to get
+ * wrong. The cost is that it stays open until clicked again, which for a
+ * two-item menu is a fair trade.
+ */
+
+.rowmenu {
+  position: relative;
+  flex: none;
+}
+
+.rowmenu > summary {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 3px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--ink-soft);
+  list-style: none;
+  cursor: pointer;
+}
+
+.rowmenu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.rowmenu > summary:hover {
+  border-color: var(--rule-strong);
+}
+
+.rowmenu__panel {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  width: max-content;
+  padding: 5px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 8px;
+  background: var(--paper);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 12%);
+}
+
+.rowmenu__item {
+  padding: 7px 11px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8125rem;
+  text-align: left;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.rowmenu__item:hover {
+  background: var(--paper-sunk);
+}
+
+.rowmenu__item--bad {
+  color: var(--bad);
+}
+
+/* Under ~52rem the six columns stop fitting. Drop the two that are recoverable
+ * elsewhere — the URL is one click away under Open feed, and the interval is
+ * in the Edit dialog — rather than letting every column crush. */
+@media (max-width: 52rem) {
+  .citytools {
+    flex-wrap: wrap;
+  }
+
+  /* .citysearch__box is the flex child, not the input inside it — targeting the
+     input leaves the box at its content width and the row never wraps. */
+  .citysearch__box {
+    flex-basis: 100%;
+  }
+
+  .feeds__url,
+  .feeds th:nth-child(2),
+  .feeds th:nth-child(4),
+  .feeds td:nth-child(4) {
+    display: none;
+  }
+
+  .citycard__head {
+    flex-wrap: wrap;
+  }
+}
+
+.health {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.75rem;
+  font-weight: 400;
+  /* The label is two words and the status column is the narrowest thing on the
+   * row; wrapped, the dot floats away from its text. */
+  white-space: nowrap;
+}
+
+.health::before {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.health--ok { color: var(--good); }
+.health--warn { color: var(--warn); }
+.health--bad { color: var(--bad); }
+/* Archived is a decision, not a problem. Amber would read as "something is
+ * wrong here" about a city someone deliberately put away. */
+.health--off { color: var(--ink-faint); }
+
+/* ---------- dialog ------------------------------------------------------ */
+
+dialog {
+  width: min(30rem, calc(100vw - 2rem));
+  padding: 0;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--paper);
+  color: var(--ink);
+}
+
+/* The onboarding form carries up to five feeds, so it needs the room and it
+ * needs to scroll rather than run off the bottom of the viewport. */
+.dialog--wide {
+  width: min(38rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 4rem);
+  /* Second, as a progressive override: on mobile Safari 100vh counts the
+   * retracted URL bar, which puts the bottom of the dialog under the chrome. */
+  max-height: calc(100dvh - 4rem);
+  overflow-y: auto;
+}
+
+.dialog--narrow {
+  width: min(22rem, calc(100vw - 2rem));
+}
+
+/* The story picker. Big enough to scan a list in, and a flex column so the
+ * header and footer stay put while only the list scrolls — `overflow: hidden`
+ * here rather than the `overflow-y: auto` .dialog--wide uses, or the sticky
+ * footer would scroll away with everything else. */
+.dialog--sheet {
+  width: min(72rem, 90vw);
+  height: min(46rem, 85vh);
+  /* Second, as a progressive override: on mobile Safari 100vh counts the
+   * retracted URL bar, which puts the bottom of the dialog under the chrome. */
+  height: min(46rem, 85dvh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Below this there is no room for a sheet to be anything but the screen. */
+@media (max-width: 56rem) {
+  .dialog--sheet {
+    width: calc(100vw - 1.5rem);
+    height: calc(100dvh - 1.5rem);
+  }
+
+  .pickhead,
+  .pickfilters,
+  .picklist,
+  .pickfoot {
+    padding-left: calc(var(--step) * 2);
+    padding-right: calc(var(--step) * 2);
+  }
+
+  /* Wraps rather than squeezing the buttons: at this width the count and the
+   * Discover link want their own line. */
+  .pickfoot {
+    flex-wrap: wrap;
+  }
+}
+
+dialog::backdrop {
+  background: rgb(23 24 28 / 0.45);
+}
+
+.form {
+  display: grid;
+  gap: calc(var(--step) * 1.5);
+  padding: calc(var(--step) * 2.5);
+}
+
+.form__label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+  margin-bottom: 4px;
+}
+
+.form__input {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--paper);
+}
+
+.form__input:focus {
+  outline: none;
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 2px var(--cyan-tint);
+}
+
+/* Referenced by sources.js field() for every non-checkbox input. It was
+ * previously undefined, so the labels were unstyled. */
+.block {
+  display: block;
+}
+
+/* One feed's worth of inputs inside the onboarding form, where up to five of
+ * them stack. */
+.subform {
+  display: grid;
+  gap: calc(var(--step) * 1.25);
+  margin: 0;
+  padding: calc(var(--step) * 1.75);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper-sunk);
+}
+
+.subform__head {
+  display: flex;
+  align-items: center;
+  gap: var(--step);
+}
+
+.subform__n {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.form__check {
+  display: flex;
+  gap: var(--step);
+  align-items: flex-start;
+  font-size: 0.8125rem;
+  color: var(--ink-soft);
+}
+
+.form__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--step);
+  padding-top: var(--step);
+}
+
+/* ---------- states ------------------------------------------------------ */
+
+.note {
+  font-size: 0.8125rem;
+  color: var(--ink-soft);
+}
+
+.note--bad {
+  color: var(--bad);
+}
+
+.note--ok {
+  color: var(--good);
+}
+
+/* The outcome of a manual refresh, above the grid it just changed. */
+.feed__notice {
+  margin: 0 0 calc(var(--step) * 2);
+}
+
+.empty {
+  max-width: var(--measure);
+  margin: calc(var(--step) * 8) auto;
+  text-align: center;
+}
+
+.empty__head {
+  font-family: var(--face-head);
+  font-size: 1.25rem;
+  margin-bottom: var(--step);
+}
+
+.empty__body {
+  color: var(--ink-soft);
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+.centered {
+  padding: calc(var(--step) * 3) 0;
+  text-align: center;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
+/* ---------- #login ------------------------------------------------------ */
+
+/* The one full-bleed view: the masthead and the shell's width and padding
+ * belong to the logged-in app, and the page draws its own brand. The picker
+ * owns its `hidden`, so it is suppressed here rather than from main.js. */
+body[data-view="login"] .masthead {
+  display: none;
+}
+
+body[data-view="login"] #view {
+  max-width: none;
+  padding: 0;
+}
+
+.auth {
+  --auth-hero: #e4e1da;
+  --auth-panel: #f9f8f5;
+  --auth-field: #d8d5ce;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* A faint paper grain over both halves, drawn by an SVG noise filter so it
+ * costs no request and scales without tiling seams. */
+.auth__hero,
+.auth__panel {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.auth__hero {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(2.5rem, 9vh, 7rem);
+  /* Room at the foot for the skyline. It is 230/912 of the panel's width —
+   * 12.6vw at half the viewport — but its sky (sun, birds, clouds) may sit
+   * beside the feature list, as in the design; only the rooftops, the lower
+   * three quarters, must clear the text. */
+  padding: 2.5rem clamp(1.5rem, 4.2vw, 4.8rem) 9.6vw;
+  background-color: var(--auth-hero);
+  overflow: hidden;
+}
+
+.auth__brand {
+  display: grid;
+  gap: 2px;
+}
+
+.auth__wordmark {
+  line-height: 1.1;
+}
+
+.auth__tagline {
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+}
+
+.auth__pitch {
+  display: grid;
+  gap: 1.5rem;
+  /* Centred in the space between the brand and the skyline, which also puts
+   * it level with the form across the page. */
+  margin-block: auto;
+  padding-left: clamp(0rem, 2vw, 2.2rem);
+}
+
+.auth__headline {
+  margin: 0;
+  font-family: var(--face-head);
+  font-weight: 600;
+  /* Height as well as width: a short laptop screen must not push the
+   * skyline below the fold. */
+  font-size: clamp(2.25rem, min(3.7vw, 6.4vh), 3.5rem);
+  line-height: 1.04;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+}
+
+.auth__headline span {
+  display: block;
+}
+
+.auth__lede {
+  margin: -0.5rem 0 0;
+  max-width: 30ch;
+  font-family: var(--face-head);
+  font-size: clamp(1.125rem, min(1.45vw, 2.6vh), 1.375rem);
+  line-height: 1.45;
+  color: var(--ink-soft);
+}
+
+.auth__features {
+  display: grid;
+  gap: 0.9rem;
+  margin: 0.25rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.auth__features li {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  font-size: var(--text-base);
+  color: var(--ink-soft);
+}
+
+.auth__features svg {
+  flex: none;
+  color: var(--ink);
+}
+
+.auth__skyline {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: auto;
+  pointer-events: none;
+}
+
+.auth__panel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem clamp(1.5rem, 7.5vw, 8.75rem);
+  background-color: var(--auth-panel);
+}
+
+.auth__form {
+  display: grid;
+  width: 100%;
+  max-width: 26rem;
+}
+
+.auth__title {
+  margin: 0;
+  font-family: var(--face-head);
+  font-weight: 600;
+  font-size: 1.75rem;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+}
+
+.auth__subtitle {
+  margin: 0.5rem 0 1.75rem;
+  max-width: 30em;
+  font-size: var(--text-base);
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+
+.auth__field {
+  display: grid;
+  gap: 0.4rem;
+  margin-bottom: 1.1rem;
+}
+
+.auth__label {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.auth__control {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.auth__icon {
+  position: absolute;
+  left: 0.8rem;
+  display: flex;
+  color: var(--ink-soft);
+  pointer-events: none;
+}
+
+.auth__input {
+  width: 100%;
+  height: var(--control-h);
+  padding: 0 0.9rem 0 2.6rem;
+  border: 1px solid var(--auth-field);
+  border-radius: var(--radius);
+  background: var(--paper);
+  font: inherit;
+  font-size: var(--text-base);
+  color: var(--ink);
+}
+
+.auth__input--toggle {
+  padding-right: 2.75rem;
+}
+
+.auth__input::placeholder {
+  color: var(--ink-faint);
+}
+
+.auth__input:focus {
+  outline: none;
+  border-color: var(--ink-soft);
+  box-shadow: 0 0 0 3px rgb(23 24 28 / 0.08);
+}
+
+.auth__reveal {
+  position: absolute;
+  right: 0.35rem;
+  display: flex;
+  padding: 0.4rem;
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.auth__reveal:focus-visible {
+  outline: 2px solid var(--ink-soft);
+}
+
+.auth__error {
+  margin: -0.3rem 0 0.8rem;
+  font-size: var(--text-sm);
+  color: var(--bad);
+}
+
+.auth__error:empty {
+  display: none;
+}
+
+.auth__submit {
+  height: var(--control-h);
+  margin-top: 0.6rem;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--ink);
+  color: var(--paper);
+  font: inherit;
+  font-size: var(--text-base);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.auth__submit:hover {
+  background: #000;
+}
+
+.auth__submit:focus-visible {
+  outline: 3px solid rgb(23 24 28 / 0.25);
+  outline-offset: 2px;
+}
+
+.auth__submit:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* Short screens (a 720px laptop): the same page with less air, so the
+ * skyline still lands at the foot rather than below the fold. */
+@media (min-width: 901px) and (max-height: 780px) {
+  .auth__hero {
+    gap: 2rem;
+  }
+
+  .auth__pitch {
+    gap: 1.1rem;
+  }
+
+  .auth__features {
+    gap: 0.75rem;
+  }
+}
+
+/* Narrow screens: one column, the pitch shortened to brand, headline and lede
+ * so the form is reachable without scrolling past a feature list. */
+@media (max-width: 900px) {
+  .auth {
+    grid-template-columns: 1fr;
+  }
+
+  .auth__hero {
+    gap: 2rem;
+    /* Full width here, so the skyline is twice as tall relative to vw. */
+    padding: 1.75rem 1.5rem calc(19.2vw + 0.5rem);
+  }
+
+  .auth__pitch {
+    padding-left: 0;
+  }
+
+  .auth__features {
+    display: none;
+  }
+
+  .auth__panel {
+    align-items: flex-start;
+    padding: 2.5rem 1.5rem 3.5rem;
+  }
+}

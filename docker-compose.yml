@@ -1,0 +1,36 @@
+# Base: the two services and how they depend on each other. Environment and
+# published ports come from docker-compose.override.yml (local, loaded
+# automatically) or docker-compose.prod.yml (-f, see CLAUDE.md).
+# Rotated, because the default json-file driver grows without bound and on a
+# single VPS that ends with a full disk.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    logging: *logging
+    volumes:
+      # Postgres 18 keeps its data under a versioned subdirectory of this path;
+      # mounting .../data as older images did fails on 18.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    logging: *logging
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
