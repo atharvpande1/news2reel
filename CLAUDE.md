@@ -677,6 +677,10 @@ correlates with itself on a repeat run. An axis that fails that is not an axis.
 
 ## Conventions
 
+- **Branches: `main` is what is deployed, `dev` is integration.** Every change
+  starts on a feature branch cut from `dev` and merges back into `dev` with
+  `--no-ff`; `dev` merges into `main` to release. Never commit to `main` or
+  `dev` directly, and never branch a feature from `main`.
 - Type-hint everything; pydantic models for all API boundaries.
 - Tunables (intervals, rank weights, batch sizes, concurrency, model names,
   timeouts, size caps) go in `core/config.py`, never inline.
