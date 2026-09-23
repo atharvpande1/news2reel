@@ -2,16 +2,24 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.enums import Category
-
 
 class SourceCreate(BaseModel):
     name: str = Field(min_length=1)
     feed_url: str = Field(min_length=1)
     language: str = Field(min_length=1)
     publisher_group: str = Field(min_length=1)
-    category_map: dict[str, Category] = Field(default_factory=dict)
+    # No `city` field: a source is created under a city (POST /cities, or
+    # POST /cities/{id}/sources) and never on its own, so the city comes from
+    # the route rather than the payload.
+    #
+    # This masthead only covers its city, so skip the /city/<slug>/ URL check
+    # and treat every article it publishes as local. A local outlet has no
+    # reason to put its city in its paths.
+    is_local_outlet: bool = False
     enabled: bool = True
+    # 1 minute to 7 days. The scheduler treats this as a lower bound anyway —
+    # a feed's own cache-control: max-age can push the real interval out.
+    fetch_interval_minutes: int = Field(default=30, ge=1, le=10080)
 
 
 class SourceUpdate(BaseModel):
@@ -23,8 +31,12 @@ class SourceUpdate(BaseModel):
     feed_url: str | None = Field(default=None, min_length=1)
     language: str | None = Field(default=None, min_length=1)
     publisher_group: str | None = Field(default=None, min_length=1)
-    category_map: dict[str, Category] | None = None
+    # No `city_id`: a source does not move between cities. Allowing it here
+    # would let a PATCH push a city past its source cap, behind the check the
+    # service does on the way in.
+    is_local_outlet: bool | None = None
     enabled: bool | None = None
+    fetch_interval_minutes: int | None = Field(default=None, ge=1, le=10080)
 
 
 class SourceRead(BaseModel):
@@ -36,7 +48,14 @@ class SourceRead(BaseModel):
     language: str
     enabled: bool
     publisher_group: str
-    category_map: dict[str, str]
+    city_id: int
+    # Denormalised for display: every consumer that shows a source shows its
+    # city, and making each one join for a string is not worth the round trip.
+    city_name: str | None = None
+    is_local_outlet: bool
+    fetch_interval_minutes: int
+    last_fetched_at: datetime | None
+    consecutive_failures: int
     last_success_at: datetime | None
     last_error: str | None
     last_error_at: datetime | None

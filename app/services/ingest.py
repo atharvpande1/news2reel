@@ -1,24 +1,34 @@
-"""Fetch every enabled, non-archived Source's feed and normalise entries into
-Article rows. Per-source failures never abort the run — see CLAUDE.md: record
-last_error on the Source row, continue, report per-source outcomes."""
+"""Normalise a fetched feed into Article rows.
+
+Deliberately split at the network boundary: `build_conditional_headers` and
+`parse_and_persist` are the two halves of one ingest. services/scheduler.py
+fetches concurrently and then calls `parse_and_persist`, so nothing here touches
+the network. feedparser is synchronous and CPU-bound, so it runs on a worker
+thread; everything else is on the loop. See CLAUDE.md's runtime constraints.
+"""
 
 from __future__ import annotations
 
-import hashlib
+import asyncio
+import html
+import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import feedparser
+import httpx
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import Settings
-from app.core.net import FetchError, fetch_url
+from app.core.hashing import article_key, content_hash
+from app.core.text import strip_markup
 from app.db.models.article import Article
+from app.db.models.city import City
 from app.db.models.source import Source
-from app.services.similarity import content_hash as compute_content_hash
+from app.services.sensitivity import rule_based_flags
 
 _TRACKING_PARAMS = {
     "utm_source",
@@ -31,11 +41,13 @@ _TRACKING_PARAMS = {
     "cmpid",
 }
 _NOT_MODIFIED = 304
+_MAX_AGE_RE = re.compile(r"\bmax-age\s*=\s*(\d+)", re.IGNORECASE)
+_NO_STORE_RE = re.compile(r"\bno-(store|cache)\b", re.IGNORECASE)
 
 
 def canonicalize_url(url: str) -> str:
     """Strip tracking params and normalise trailing slashes before hashing —
-    two URLs differing only by a utm_source param must hash to the same
+    two URLs differing only by a utm_source param must produce the same
     Article.id, or the same story gets ingested twice under different ids."""
     parts = urlsplit(url)
     query = sorted(
@@ -47,8 +59,20 @@ def canonicalize_url(url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, path, urlencode(query), ""))
 
 
-def article_id(source_id: int, canonical_url: str) -> str:
-    return hashlib.sha256(f"{source_id}:{canonical_url}".encode()).hexdigest()
+def extract_city(url: str) -> str | None:
+    """Pull the city out of a `/city/<name>/...` URL path, casefolded.
+
+    Returns None when the path carries no city segment. Deliberately no
+    fallback to the Source's own city: this column is the ingested fact, and
+    filling it with a city we cannot actually read off the URL would destroy the
+    one key that lets a city onboarded later be backfilled against articles
+    already stored. See CLAUDE.md's domain rules.
+    """
+    segments = [segment for segment in urlsplit(url).path.split("/") if segment]
+    for index, segment in enumerate(segments[:-1]):
+        if segment.casefold() == "city":
+            return segments[index + 1].casefold()
+    return None
 
 
 @dataclass
@@ -57,6 +81,27 @@ class SourceIngestOutcome:
     ok: bool
     new_articles: int
     error: str | None
+    not_modified: bool = False
+
+
+def build_conditional_headers(source: Source) -> dict[str, str]:
+    headers = {}
+    if source.etag:
+        headers["If-None-Match"] = source.etag
+    if source.last_modified:
+        headers["If-Modified-Since"] = source.last_modified
+    return headers
+
+
+def parse_max_age(headers: httpx.Headers) -> int | None:
+    """`cache-control: max-age` becomes a floor on the poll interval. A
+    no-store/no-cache response declares nothing useful about when to come
+    back, so it contributes no floor."""
+    directive = headers.get("cache-control")
+    if not directive or _NO_STORE_RE.search(directive):
+        return None
+    match = _MAX_AGE_RE.search(directive)
+    return int(match.group(1)) if match else None
 
 
 def _parse_time(struct_time) -> datetime | None:
@@ -100,59 +145,137 @@ def _extract_images(entry) -> list[dict]:
     return images
 
 
-def _normalize_entry(source: Source, entry, feed_position: int) -> Article | None:
+async def city_slug_map(db: AsyncSession) -> dict[str, int]:
+    """`{slug: city_id}` for resolving an article's parsed city.
+
+    Built once per feed rather than queried per article: a tick can carry a few
+    hundred entries and there are only ever a handful of cities.
+    """
+    rows = (await db.execute(select(City.id, City.slug))).all()
+    return {slug: city_id for city_id, slug in rows}
+
+
+def _normalize_entry(
+    source: Source, entry, feed_position: int, cities: dict[str, int]
+) -> Article | None:
     link = entry.get("link")
-    title = entry.get("title")
-    if not link or not title:
+    raw_title = entry.get("title")
+    if not link or not raw_title:
         return None
 
     canonical = canonicalize_url(link)
-    summary = entry.get("summary")
+    raw_summary = entry.get("summary")
     tags = entry.get("tags") or []
     category_raw = tags[0].get("term") if tags else None
 
+    # Feeds routinely double-escape, so XML parsing leaves a layer behind:
+    # "plug-&amp;-play" reaches us still entity-encoded and would render that
+    # way. Unescape once, here at the boundary, so everything downstream — the
+    # dedupe key, the sensitivity regex, the API payload — sees real text.
+    # `raw` deliberately keeps what the feed actually said.
+    title = html.unescape(raw_title)
+    # Descriptions arrive as markup — a CDATA block holding an <a><img/></a>
+    # thumbnail, sometimes with prose after it, sometimes not. Keep the text and
+    # drop the tags here at the boundary, so every reader downstream gets prose:
+    # the card, the sensitivity regex, the dedupe content_hash, and above all
+    # the classifier's prompt, which was being handed raw <img> attributes as if
+    # they were a summary. A description with no prose in it at all becomes NULL
+    # rather than an empty string — "we were given no summary" is the truth, and
+    # it is the same state 20% of the corpus is already in. `raw` below keeps
+    # what the feed actually said.
+    summary = strip_markup(html.unescape(raw_summary)) or None if raw_summary else None
+
+    text = f"{title} {summary or ''}"
     return Article(
-        id=article_id(source.id, canonical),
+        id=article_key(canonical, title),
         source_id=source.id,
         url=link,
         canonical_url=canonical,
         title=title,
         summary=summary,
-        body_text=None,
         published_at=_parse_time(entry.get("published_parsed")),
         language=source.language,
         feed_position=feed_position,
-        category_raw=category_raw,
         images=_extract_images(entry),
-        content_hash=compute_content_hash(f"{title} {summary or ''}"),
-        raw={"title": title, "link": link, "summary": summary, "category_raw": category_raw},
+        # The parsed slug is kept whether or not it resolves: it is the
+        # ingested fact, and it is what lets a city onboarded later be
+        # backfilled against articles already stored.
+        city=(parsed_city := extract_city(link)),
+        city_id=cities.get(parsed_city) if parsed_city else None,
+        sensitivity_flags=[flag.value for flag in rule_based_flags(text)],
+        content_hash=content_hash(text),
+        raw={
+            "title": raw_title,
+            "link": link,
+            "summary": raw_summary,
+            "category_raw": category_raw,
+        },
     )
 
 
-def ingest_source(db: Session, source: Source, settings: Settings) -> SourceIngestOutcome:
-    """Fetch one source's feed and upsert its entries. Never raises for a
-    fetch or parse failure — records it on the Source row instead."""
-    conditional_headers = {}
-    if source.etag:
-        conditional_headers["If-None-Match"] = source.etag
-    if source.last_modified:
-        conditional_headers["If-Modified-Since"] = source.last_modified
+def _as_row(article: Article) -> dict:
+    """The columns _normalize_entry set, as a Core insert row. Unset columns are
+    left out so their column defaults apply, exactly as an ORM flush would."""
+    return {
+        column.key: getattr(article, column.key)
+        for column in Article.__table__.columns
+        if column.key in vars(article)
+    }
 
-    now = datetime.now(UTC)
-    try:
-        result = fetch_url(source.feed_url, settings, conditional_headers=conditional_headers)
-    except FetchError as exc:
-        source.last_error = str(exc)
-        source.last_error_at = now
-        db.flush()
-        return SourceIngestOutcome(source_id=source.id, ok=False, new_articles=0, error=str(exc))
+
+def record_fetch_failure(source: Source, error: str, now: datetime) -> SourceIngestOutcome:
+    """A fetch or parse failure never raises past here — it lands on the Source
+    row and the caller moves on. See CLAUDE.md: per-source failures never abort
+    a scheduler tick or a run."""
+    source.last_error = error
+    source.last_error_at = now
+    source.last_fetched_at = now
+    source.consecutive_failures += 1
+    return SourceIngestOutcome(source_id=source.id, ok=False, new_articles=0, error=error)
+
+
+def _record_fetch_success(source: Source, result_headers: httpx.Headers, now: datetime) -> None:
+    # Refresh the validators on every success, 304 included: a server that
+    # rotates its ETag on an unchanged body would otherwise make every
+    # subsequent poll a full download.
+    source.etag = result_headers.get("etag") or source.etag
+    source.last_modified = result_headers.get("last-modified") or source.last_modified
+    source.cache_max_age_seconds = parse_max_age(result_headers)
+    source.last_success_at = now
+    source.last_fetched_at = now
+    source.consecutive_failures = 0
+    source.last_error = None
+    source.last_error_at = None
+
+
+async def parse_and_persist(
+    db: AsyncSession,
+    source: Source,
+    result,
+    now: datetime,
+    seen_ids: set[str] | None = None,
+) -> SourceIngestOutcome:
+    """Parse a fetched feed body and insert the entries we don't already have.
+
+    `seen_ids` lets one scheduler tick share dedupe state across sources, so
+    two mastheads carrying the same story in the same tick collide before
+    either insert runs.
+
+    The insert is ON CONFLICT DO NOTHING on the PK rather than a lookup and an
+    add: the PK *is* the dedupe ledger, and a scheduled tick racing a city
+    refresh would otherwise both see "absent" and one of them would die on an
+    IntegrityError. RETURNING says which rows were actually new.
+    """
+    seen_ids = seen_ids if seen_ids is not None else set()
+    cities = await city_slug_map(db)
 
     if result.status_code == _NOT_MODIFIED:
-        source.last_success_at = now
-        db.flush()
-        return SourceIngestOutcome(source_id=source.id, ok=True, new_articles=0, error=None)
+        _record_fetch_success(source, result.headers, now)
+        return SourceIngestOutcome(
+            source_id=source.id, ok=True, new_articles=0, error=None, not_modified=True
+        )
 
-    parsed = feedparser.parse(result.content)
+    parsed = await asyncio.to_thread(feedparser.parse, result.content)
     # parsed.version == "" means feedparser couldn't identify this as any
     # known feed format at all (e.g. plain HTML) — a more reliable signal
     # than bozo, which feedparser doesn't set for non-feed-shaped input, only
@@ -165,33 +288,25 @@ def ingest_source(db: Session, source: Source, settings: Settings) -> SourceInge
         # altogether absent (e.g. a truly empty response body) — that must
         # become a recorded per-source error, not an uncaught crash.
         reason = parsed.bozo_exception if parsed.bozo else "unrecognized format"
-        error = f"response did not parse as a feed: {reason}"
-        source.last_error = error
-        source.last_error_at = now
-        db.flush()
-        return SourceIngestOutcome(source_id=source.id, ok=False, new_articles=0, error=error)
+        return record_fetch_failure(source, f"response did not parse as a feed: {reason}", now)
+
+    rows = []
+    for position, entry in enumerate(parsed.entries, start=1):
+        article = _normalize_entry(source, entry, position, cities)
+        if article is None or article.id in seen_ids:
+            continue
+        seen_ids.add(article.id)
+        rows.append(_as_row(article))
 
     new_count = 0
-    for position, entry in enumerate(parsed.entries, start=1):
-        article = _normalize_entry(source, entry, position)
-        if article is None:
-            continue
-        if db.get(Article, article.id) is None:
-            db.add(article)
-            new_count += 1
+    if rows:
+        inserted = await db.scalars(
+            insert(Article)
+            .values(rows)
+            .on_conflict_do_nothing(index_elements=[Article.id])
+            .returning(Article.id)
+        )
+        new_count = len(inserted.all())
 
-    source.etag = result.headers.get("etag") or source.etag
-    source.last_modified = result.headers.get("last-modified") or source.last_modified
-    source.last_success_at = now
-    source.last_error = None
-    source.last_error_at = None
-    db.flush()
-
+    _record_fetch_success(source, result.headers, now)
     return SourceIngestOutcome(source_id=source.id, ok=True, new_articles=new_count, error=None)
-
-
-def ingest_all(db: Session, settings: Settings) -> list[SourceIngestOutcome]:
-    sources = list(
-        db.scalars(select(Source).where(Source.enabled.is_(True), Source.archived_at.is_(None)))
-    )
-    return [ingest_source(db, source, settings) for source in sources]

@@ -1,11 +1,7 @@
-"""SQLite silently drops tzinfo on DateTime(timezone=True) round-trips — its
-sqlite3 adapter has no native timezone-aware TIMESTAMP type, so a value
-stored as UTC-aware comes back naive. That's a real, easy-to-hit bug: any
-Python-side arithmetic comparing a DB-fetched datetime against a freshly
-created datetime.now(UTC) raises TypeError. UTCDateTime re-attaches UTC on
-load (and assumes UTC on write if a naive value is ever passed), so every
-datetime column behaves consistently. Same DDL as DateTime(timezone=True) —
-using this instead of that everywhere needs no migration.
+"""A DateTime(timezone=True) that never lets a naive value through: assumes UTC
+on write if a naive datetime is ever passed, and re-attaches UTC on load, so
+Python-side arithmetic against datetime.now(UTC) can never raise TypeError.
+Postgres' timestamptz already returns aware values; this guards the edges.
 """
 
 from datetime import UTC, datetime

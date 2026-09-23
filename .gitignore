@@ -9,10 +9,12 @@ wheels/
 # Virtual environments
 .venv
 
-# Local runtime state — see CLAUDE.md: the DB is never committed or shared
-# via files; it's created by `alembic upgrade head`.
+# SQLite-era archives — the DB now lives in the pgdata volume.
 *.db
 *.db-wal
 *.db-shm
-.env
+
+# Secrets. The .example templates are committed.
+.env*
+!.env*.example
 

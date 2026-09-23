@@ -1,9 +1,15 @@
-"""SSRF-safe outbound fetch. Every fetch of a third-party URL — feed polling,
-`POST /sources/{id}/check` — must go through `fetch_url`, never a raw
-`httpx`/`requests` call. See CLAUDE.md: "External input is hostile"."""
+"""SSRF-safe outbound fetch. Every fetch of a third-party URL — scheduled feed
+polling, `POST /sources/{id}/check` — must go through here, never a raw
+`httpx`/`requests` call. See CLAUDE.md: "External input is hostile".
+
+`fetch_url_async` is the real implementation; `fetch_url` only opens a client
+for it. One copy of the address policy and of the redirect/size-cap loop —
+forking that logic is how an entry point quietly loses a check.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import socket
 from dataclasses import dataclass
@@ -17,7 +23,7 @@ ALLOWED_SCHEMES = {"http", "https"}
 
 
 class FetchError(Exception):
-    """Base for any failure that stops fetch_url from returning a result."""
+    """Base for any failure that stops a fetch from returning a result."""
 
 
 class UnsafeUrlError(FetchError):
@@ -41,19 +47,9 @@ class FetchResult:
     final_url: str
 
 
-def _validate_public_url(url: str) -> None:
-    parsed = urlparse(url)
-    if parsed.scheme not in ALLOWED_SCHEMES:
-        raise UnsafeUrlError(f"scheme {parsed.scheme!r} is not allowed")
-    if not parsed.hostname:
-        raise UnsafeUrlError("URL has no hostname")
-
-    try:
-        addr_infos = socket.getaddrinfo(parsed.hostname, None)
-    except socket.gaierror as exc:
-        raise UnsafeUrlError(f"could not resolve host {parsed.hostname!r}") from exc
-
-    for _family, _type, _proto, _canonname, sockaddr in addr_infos:
+def _reject_non_public(hostname: str, addr_infos) -> None:
+    """The address policy. Pure — it takes already-resolved addrinfo tuples."""
+    for *_unused, sockaddr in addr_infos:
         ip = ipaddress.ip_address(sockaddr[0])
         if (
             ip.is_private
@@ -63,13 +59,51 @@ def _validate_public_url(url: str) -> None:
             or ip.is_multicast
             or ip.is_unspecified
         ):
-            raise UnsafeUrlError(f"{parsed.hostname!r} resolves to non-public address {ip}")
+            raise UnsafeUrlError(f"{hostname!r} resolves to non-public address {ip}")
 
 
-def fetch_url(
+def _parse_target(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme not in ALLOWED_SCHEMES:
+        raise UnsafeUrlError(f"scheme {parsed.scheme!r} is not allowed")
+    if not parsed.hostname:
+        raise UnsafeUrlError("URL has no hostname")
+    return parsed.hostname
+
+
+async def _validate_public_url(url: str) -> None:
+    """`socket.getaddrinfo` is blocking, and this runs on the event loop that
+    also carries the scheduler and `/health` — so resolve through the loop's
+    executor rather than calling it directly."""
+    hostname = _parse_target(url)
+    loop = asyncio.get_running_loop()
+    try:
+        addr_infos = await loop.getaddrinfo(hostname, None)
+    except socket.gaierror as exc:
+        raise UnsafeUrlError(f"could not resolve host {hostname!r}") from exc
+    _reject_non_public(hostname, addr_infos)
+
+
+def build_timeout(settings: Settings) -> httpx.Timeout:
+    return httpx.Timeout(
+        connect=settings.fetch_connect_timeout_seconds,
+        read=settings.fetch_read_timeout_seconds,
+        write=settings.fetch_read_timeout_seconds,
+        pool=settings.fetch_connect_timeout_seconds,
+    )
+
+
+def build_async_client(settings: Settings) -> httpx.AsyncClient:
+    """One client per scheduler tick, so a tick's fetches share a connection
+    pool instead of reconnecting per source."""
+    return httpx.AsyncClient(timeout=build_timeout(settings), follow_redirects=False)
+
+
+async def fetch_url_async(
     url: str,
     settings: Settings,
     *,
+    client: httpx.AsyncClient,
     conditional_headers: dict[str, str] | None = None,
 ) -> FetchResult:
     """Fetch a third-party URL defensively.
@@ -88,46 +122,52 @@ def fetch_url(
     current_url = url
     redirects_followed = 0
 
-    timeout = httpx.Timeout(
-        connect=settings.fetch_connect_timeout_seconds,
-        read=settings.fetch_read_timeout_seconds,
-        write=settings.fetch_read_timeout_seconds,
-        pool=settings.fetch_connect_timeout_seconds,
-    )
+    while True:
+        await _validate_public_url(current_url)
 
-    with httpx.Client(timeout=timeout, follow_redirects=False) as client:
-        while True:
-            _validate_public_url(current_url)
+        try:
+            async with client.stream(
+                "GET", current_url, headers=dict(conditional_headers or {})
+            ) as response:
+                # has_redirect_location, not is_redirect: the latter is true
+                # for *any* 3xx status including 304 Not Modified — a
+                # conditional GET hit would otherwise be misread as a redirect
+                # with a missing Location header and rejected.
+                if response.has_redirect_location:
+                    redirects_followed += 1
+                    if redirects_followed > settings.fetch_max_redirects:
+                        raise UnsafeUrlError("too many redirects")
+                    location = response.headers["location"]
+                    current_url = str(response.url.join(location))
+                    continue
 
-            try:
-                with client.stream(
-                    "GET", current_url, headers=dict(conditional_headers or {})
-                ) as response:
-                    # has_redirect_location, not is_redirect: the latter is
-                    # true for *any* 3xx status including 304 Not Modified —
-                    # a conditional GET hit would otherwise be misread as a
-                    # redirect with a missing Location header and rejected.
-                    if response.has_redirect_location:
-                        redirects_followed += 1
-                        if redirects_followed > settings.fetch_max_redirects:
-                            raise UnsafeUrlError("too many redirects")
-                        location = response.headers["location"]
-                        current_url = str(response.url.join(location))
-                        continue
+                content = bytearray()
+                async for chunk in response.aiter_bytes():
+                    content.extend(chunk)
+                    if len(content) > settings.fetch_max_response_bytes:
+                        raise FetchTooLargeError(
+                            f"response exceeded {settings.fetch_max_response_bytes} bytes"
+                        )
 
-                    content = bytearray()
-                    for chunk in response.iter_bytes():
-                        content.extend(chunk)
-                        if len(content) > settings.fetch_max_response_bytes:
-                            raise FetchTooLargeError(
-                                f"response exceeded {settings.fetch_max_response_bytes} bytes"
-                            )
+                return FetchResult(
+                    status_code=response.status_code,
+                    headers=response.headers,
+                    content=bytes(content),
+                    final_url=str(response.url),
+                )
+        except httpx.HTTPError as exc:
+            raise FetchTransportError(str(exc)) from exc
 
-                    return FetchResult(
-                        status_code=response.status_code,
-                        headers=response.headers,
-                        content=bytes(content),
-                        final_url=str(response.url),
-                    )
-            except httpx.HTTPError as exc:
-                raise FetchTransportError(str(exc)) from exc
+
+async def fetch_url(
+    url: str,
+    settings: Settings,
+    *,
+    conditional_headers: dict[str, str] | None = None,
+) -> FetchResult:
+    """One-off fetch with its own client — `POST /sources/{id}/check`. The
+    scheduler shares one client per tick through `fetch_url_async` instead."""
+    async with build_async_client(settings) as client:
+        return await fetch_url_async(
+            url, settings, client=client, conditional_headers=conditional_headers
+        )

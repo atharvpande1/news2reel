@@ -1,22 +1,36 @@
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Cookie, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
+from app.core.security import InvalidTokenError, decode_token
+from app.db.models.user import User
 from app.db.session import get_db
 
-__all__ = ["get_db", "require_shared_secret"]
+__all__ = ["ACCESS_COOKIE", "REFRESH_COOKIE", "current_user", "get_db", "unauthorized"]
+
+ACCESS_COOKIE = "feedcast_access"
+REFRESH_COOKIE = "feedcast_refresh"
 
 
-def require_shared_secret(
-    x_api_key: str | None = Header(default=None),
+def unauthorized(detail: str = "not logged in") -> HTTPException:
+    return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
+
+
+async def current_user(
+    feedcast_access: str | None = Cookie(default=None),
+    db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
-) -> None:
-    """No-op when api_shared_secret is unset — acceptable only because the
-    runbook binds the dev server to 127.0.0.1. See CLAUDE.md's runtime
-    constraints: this guard exists because POST /runs (and, upstream of it,
-    outbound fetches) cost real money and CPU if left open."""
-    if settings.api_shared_secret is None:
-        return
-    if x_api_key != settings.api_shared_secret:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid or missing API key"
-        )
+) -> User:
+    """The logged-in editor, from the access cookie. Re-loads the row on every
+    request: with no token blocklist, deleting the user is the only way to cut
+    off a token that is still inside its lifetime. See CLAUDE.md's "Auth"."""
+    if feedcast_access is None:
+        raise unauthorized()
+    try:
+        user_id = decode_token(feedcast_access, "access", settings)
+    except InvalidTokenError:
+        raise unauthorized("session expired") from None
+    user = await db.get(User, user_id)
+    if user is None:
+        raise unauthorized()
+    return user
